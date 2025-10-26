@@ -19,6 +19,7 @@
 #include <windows.h>
 #undef	_INC_OLE
 #include <shlobj.h>
+#include <processenv.h>
 
 #include "General.h"
 
@@ -1376,6 +1377,7 @@ int ExecItemFile(HWND hWnd, char *FileName, char *CommandLine, struct TPITEM *tp
 {
 	SHELLEXECUTEINFO sei;
 	char buf[MAXSIZE];
+	char buf_fn[MAXSIZE+1];
 	char *ExeFilePath;
 	char *CommnadLineString;
 	int ret;
@@ -1385,13 +1387,14 @@ int ExecItemFile(HWND hWnd, char *FileName, char *CommandLine, struct TPITEM *tp
 	//コマンドラインの作成
 	ExecArgBadChar = FALSE;
 	SetExecCommandLine(hWnd, CommandLine, buf, MAXSIZE, tpItemInfo);
+	ExpandEnvironmentStringsA(FileName, buf_fn, MAXSIZE);
 	//バッチファイルでは引数の文字がコマンドとして解釈されるため、該当する文字を含む場合は実行しない
 	if(ExecArgBadChar == TRUE && IsBatchFile(FileName) == TRUE){
 		MessageBox(hWnd, EMSG_EXEC_BATCH, EMSG_EXEC_TITLE, MB_ICONEXCLAMATION);
 		return -1;
 	}
 
-	ExeFilePath = FileName;
+	ExeFilePath = buf_fn;
 	CommnadLineString = buf;
 
 	//ファイル名が指定されていない場合はコマンドラインを設定する（関連付けで実行）

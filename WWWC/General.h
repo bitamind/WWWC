@@ -39,7 +39,7 @@
 #define IS_LEAD_BYTE(p)				(IsDBCSLeadByte((BYTE)*(p)) == TRUE && *((p) + 1) != '\0')
 
 #define APP_NAME					"WWWC"
-#define APP_VERSION					"1.2.0"
+#define APP_VERSION					"1.2.0 mod"
 #define APP_COPYRIGHT				"Copyright (C) 1996-2026 by Ohno Tomoaki. All rights reserved."
 #define APP_URL						"https://nakka.com/"
 #define APP_MAIL					"nakka@nakka.com"
