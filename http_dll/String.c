@@ -2105,6 +2105,9 @@ static char *convUtf8(char *buf) {
 		return NULL;
 	}
 	wbuf = (WCHAR *)GlobalAlloc(GMEM_FIXED, (wlen + 1) * sizeof(WCHAR));
+	if (wbuf == NULL) {
+		return NULL;
+	}
 	MultiByteToWideChar(CP_UTF8, 0, buf, -1, wbuf, wlen);
 
 	clen = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, NULL, 0, NULL, NULL);
@@ -2113,6 +2116,10 @@ static char *convUtf8(char *buf) {
 		return NULL;
 	}
 	cbuf = (char *)GlobalAlloc(GMEM_FIXED, (clen + 1) * sizeof(char));
+	if (cbuf == NULL) {
+		GlobalFree(wbuf);
+		return NULL;
+	}
 	WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, cbuf, clen, NULL, NULL);
 	if (lstrcmp(buf, cbuf) != 0) {
 		GlobalFree(cbuf);
@@ -2127,6 +2134,10 @@ static char *convUtf8(char *buf) {
 		return NULL;
 	}
 	cbuf = (char *)GlobalAlloc(GMEM_FIXED, (clen + 1) * sizeof(char));
+	if (cbuf == NULL) {
+		GlobalFree(wbuf);
+		return NULL;
+	}
 	WideCharToMultiByte(CP_ACP, 0, wbuf, -1, cbuf, clen, NULL, NULL);
 	GlobalFree(wbuf);
 	return cbuf;
@@ -2136,7 +2147,7 @@ static char *convUtf8(char *buf) {
 
 	SrcConv
 
-	ソースをSJISに変換する
+	ソースをSJISに変換する (メモリを確保できない場合は NULL)
 
 ******************************************************************************/
 
@@ -2150,7 +2161,7 @@ char *SrcConv(char *buf, long Size)
 	}
 	tmp = (char *)GlobalAlloc(GMEM_FIXED, Size + 1);
 	if(tmp == NULL){
-		abort();
+		return NULL;
 	}
 	ConvStrCode(buf, tmp);
 	return tmp;

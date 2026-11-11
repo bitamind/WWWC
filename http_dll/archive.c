@@ -1154,7 +1154,13 @@ static BOOL DeleteDirTree(const char *dir)
 		lstrcpyW(path, L"\\\\?\\");
 	}
 	if(MultiByteToWideChar(CP_ACP, 0, dir, -1, path + n, 32768 - n) > 0){
-		ret = DeleteTreeW(path, 32768);
+		DWORD attr = GetFileAttributesW(path);
+		if(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT)){
+			//リンクの先はたどらず、リンクのみ削除する
+			ret = RemoveDirectoryW(path);
+		}else{
+			ret = DeleteTreeW(path, 32768);
+		}
 	}
 	HeapFree(GetProcessHeap(), 0, path);
 	return ret;
@@ -1173,7 +1179,12 @@ static BOOL GetBrowserRoot(char *ret)
 		lstrcat(ret, "\\");
 	}
 	lstrcat(ret, ARCHIVE_BROWSER_DIR);
-	return EnsureDir(ret);
+	if(EnsureDir(ret) == FALSE){
+		return FALSE;
+	}
+	//リンクの場合は、リンクの先を掃除しないよう使用しない
+	n = GetFileAttributes(ret);
+	return (n != INVALID_FILE_ATTRIBUTES && !(n & FILE_ATTRIBUTE_REPARSE_POINT)) ? TRUE : FALSE;
 }
 
 /*
@@ -1219,6 +1230,7 @@ static void CleanBrowserProfiles(const char *root)
 		}
 		wsprintf(path, "%s\\%s", root, fd.cFileName);
 		if(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY){
+			//リンクの場合は DeleteDirTree がリンクのみ削除する
 			DeleteDirTree(path);
 		}else{
 			DeleteFile(path);
@@ -1604,6 +1616,91 @@ static void SaveEntries(ARCHIVE_JOB *job)
 	Resources
 **************************************************************************/
 
+/* UTF-16 の種類 (0: UTF-16 ではない、1: リトルエンディアン、2: ビッグエンディアン。bom は BOM の長さ) */
+static int Utf16Type(const char *body, long len, const char *charset, int *bom)
+{
+	*bom = 0;
+	if(len >= 2 && (unsigned char)body[0] == 0xFF && (unsigned char)body[1] == 0xFE){
+		*bom = 2;
+		return 1;
+	}
+	if(len >= 2 && (unsigned char)body[0] == 0xFE && (unsigned char)body[1] == 0xFF){
+		*bom = 2;
+		return 2;
+	}
+	//UTF-8 の BOM がある場合はブラウザも UTF-8 として扱う
+	if(len >= 3 && (unsigned char)body[0] == 0xEF && (unsigned char)body[1] == 0xBB && (unsigned char)body[2] == 0xBF){
+		return 0;
+	}
+	if(charset != NULL){
+		if(lstrcmpi(charset, "utf-16") == 0 || lstrcmpi(charset, "utf-16le") == 0){
+			return 1;
+		}
+		if(lstrcmpi(charset, "utf-16be") == 0){
+			return 2;
+		}
+	}
+	return 0;
+}
+
+/*
+ * UTF-16 のページを UTF-8 に変換する (変換できない場合は FALSE)
+ * UTF-16 のままでは書き換えができず、スクリプトの制限もかけられない
+ */
+static BOOL ConvertUtf16(ARCHIVE_RESP *r)
+{
+	WCHAR *w;
+	char *u;
+	long n, i;
+	int type, bom, len;
+
+	type = Utf16Type(r->Body, r->Len, r->Charset, &bom);
+	if(type == 0){
+		return TRUE;
+	}
+	n = (r->Len - bom) / 2;
+	if(n <= 0){
+		r->Len = 0;
+		lstrcpy(r->Charset, "utf-8");
+		return TRUE;
+	}
+	w = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (n + 1) * sizeof(WCHAR));
+	if(w == NULL){
+		return FALSE;
+	}
+	for(i = 0; i < n; i++){
+		unsigned char c1 = (unsigned char)r->Body[bom + i * 2];
+		unsigned char c2 = (unsigned char)r->Body[bom + i * 2 + 1];
+		w[i] = (type == 1) ? (WCHAR)(c1 | (c2 << 8)) : (WCHAR)(c2 | (c1 << 8));
+	}
+	len = WideCharToMultiByte(CP_UTF8, 0, w, (int)n, NULL, 0, NULL, NULL);
+	if(len <= 0 || (u = (char *)HeapAlloc(GetProcessHeap(), 0, len + 1)) == NULL){
+		MemFree(w);
+		return FALSE;
+	}
+	WideCharToMultiByte(CP_UTF8, 0, w, (int)n, u, len, NULL, NULL);
+	u[len] = '\0';
+	MemFree(w);
+	MemFree(r->Body);
+	r->Body = u;
+	r->Len = len;
+	lstrcpy(r->Charset, "utf-8");
+	return TRUE;
+}
+
+/* ファイル名の拡張子が ext か */
+static BOOL HasExt(const char *name, const char *ext)
+{
+	const char *p, *dot = NULL;
+
+	for(p = name; *p != '\0'; p++){
+		if(*p == '.'){
+			dot = p;
+		}
+	}
+	return (dot != NULL && lstrcmpi(dot + 1, ext) == 0) ? TRUE : FALSE;
+}
+
 /* 保存するリソースの拡張子 (保存しない種類は NULL) */
 static const char *ResExt(int type, ARCHIVE_RESP *r, const char *url)
 {
@@ -1644,8 +1741,7 @@ static const char *ResExt(int type, ARCHIVE_RESP *r, const char *url)
 	case RES_FRAME:
 		//UTF-16 のページは書き換えられないため保存しない
 		if((lstrcmp(r->Type, "text/html") == 0 || lstrcmp(r->Type, "application/xhtml+xml") == 0) &&
-			!(r->Len >= 2 && (((unsigned char)r->Body[0] == 0xFF && (unsigned char)r->Body[1] == 0xFE) ||
-			((unsigned char)r->Body[0] == 0xFE && (unsigned char)r->Body[1] == 0xFF)))){
+			Utf16Type(r->Body, r->Len, r->Charset, &i) == 0){
 			return "html";
 		}
 		break;
@@ -2274,7 +2370,7 @@ static void RunJob(ARCHIVE_JOB *job)
 	const char *ext;
 	long outlen = 0, oldlen, datalen, domlen;
 	int gcnt = 0, i, deleted = 0;
-	BOOL html, utf16, write = TRUE, found, replace = FALSE;
+	BOOL html, write = TRUE, found, replace = FALSE;
 
 	ZeroMemory(&r, sizeof(ARCHIVE_RESP));
 	job->Result = ARCHIVE_RESULT_ERROR;
@@ -2323,12 +2419,13 @@ static void RunJob(ARCHIVE_JOB *job)
 		job->Result = ARCHIVE_RESULT_NOTHTML;
 		goto end;
 	}
-	//UTF-16 は書き換えずに保存する
-	utf16 = (r.Len >= 2 && (((unsigned char)r.Body[0] == 0xFF && (unsigned char)r.Body[1] == 0xFE) ||
-		((unsigned char)r.Body[0] == 0xFE && (unsigned char)r.Body[1] == 0xFF))) ? TRUE : FALSE;
+	//UTF-16 のページは UTF-8 に変換してから書き換える
+	if(html == TRUE && ConvertUtf16(&r) == FALSE){
+		goto end;
+	}
 	//ブラウザで表示した内容 (スクリプトの実行後の DOM、UTF-8) に置き換える
 	//(ブラウザが無い場合や失敗した場合は取得したページをそのまま使う)
-	if(html == TRUE && utf16 == FALSE && job->Browser == TRUE){
+	if(html == TRUE && job->Browser == TRUE){
 		BOOL got;
 		DWORD tick;
 
@@ -2362,7 +2459,7 @@ static void RunJob(ARCHIVE_JOB *job)
 	}
 	HashHex(r.Body, r.Len, md5, 32);
 
-	if(html == TRUE && utf16 == FALSE){
+	if(html == TRUE){
 		out = Archive_RewriteHtml(r.Body, r.Len, r.FinalUrl, r.Charset, job->Js, ARCHIVE_RES_PREFIX, ResolveRes, job, &outlen);
 		if(out == NULL || IsJobStopped(job) == TRUE){
 			//このアイテムを中止した場合は取得した画像などのうち使われていないものを削除する (終了時は待たせないため削除しない)
@@ -2406,8 +2503,9 @@ static void RunJob(ARCHIVE_JOB *job)
 		}
 	}
 	if(write == TRUE){
-		if(found == TRUE && IsGenName(oldgen) == TRUE && lstrcmp(oldmd5, md5) == 0){
+		if(found == TRUE && IsGenName(oldgen) == TRUE && HasExt(oldgen, ext) == TRUE && lstrcmp(oldmd5, md5) == 0){
 			//ページは同じでリソースが変わった場合は同じ世代を置き換える
+			//(種類が変わった場合は、書き換えていない内容を .html に保存しないよう新しい世代にする)
 			lstrcpy(gen, oldgen);
 			replace = TRUE;
 		}else if(NewGenName(job, ext, gen) == FALSE){
@@ -2917,7 +3015,8 @@ static void GetProxy(struct TPITEM *tpItemInfo, ARCHIVE_JOB *job)
 	}
 	wsprintf(proxy, "http://%s:%d", sv, port);
 	job->ProxyName = WideDup(proxy);
-	if(pUsePass == 1){
+	//認証情報は全体の設定のプロキシにのみ送る
+	if(pUsePass == 1 && px == pServer){
 		job->ProxyUser = WideDup(pUser);
 		job->ProxyPass = WideDup(pPass);
 	}

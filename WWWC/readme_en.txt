@@ -56,22 +56,21 @@ menu.
 * History
 
 - Ver 1.2.0 -> Ver 1.2.1
-	- The number of archive generations is now 1 to 999, and 0 keeps all.
-	  (Archives are not saved when the free disk space is less than 5%.)
-	- A new generation is not saved if the content of the page is the same
-	  as the previous one.
-	- The list of archive generations is now shown as a calendar by year.
-	- Pages embedded in the page (iframes and frames) are now archived too.
-	- Archives can now save the page as shown in a browser (Microsoft Edge etc.
-	  run in the background), including the data loaded by JavaScript.
-	  (Per-item setting, off by default)
-	- Added "Archive Progress" to the "View" menu and the toolbar. It shows the page being
-	  archived, the pages waiting to be archived and the history of results,
-	  and archiving can be stopped from it.
-	- Fixed a problem with invalid file names in the archive folder.
-	- Fixed WWWC not responding until an archive was saved when the settings
-	  were changed or WWWC was closed while the archive was being saved.
-	  (On exit, the archive is completed after the window is closed.)
+	- Archive improvements
+	  - The number of archive generations is now 1 to 999, and 0 keeps all.
+	    (Archives are not saved when the free disk space is less than 5%.)
+	  - The list of archive generations is now shown as a calendar by year.
+	  - Archives can now save the page as shown in a browser (Microsoft Edge
+	    etc. run in the background), including the data loaded by JavaScript.
+	- Added "Archive Progress" to the "View" menu and the toolbar. It shows
+	  the page being archived, the pages waiting to be archived and the
+	  history of results, and archiving can be stopped from it.
+	- Getting browser information now supports Opera.
+	- Fixed getting browser information from Firefox sometimes returning the
+	  page of a tab that was not selected.
+	- Fixed the proxy set for an item not being used when the proxy was
+	  disabled in the global settings.
+	- Fixed security-related issues.
 
 - Ver 1.1.3 -> Ver 1.2.0
 	- Checked pages can be archived and viewed later.

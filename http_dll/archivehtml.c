@@ -831,6 +831,66 @@ static void MakeHead(ARCHIVE_BUF *h, const char *url, const char *charset, BOOL 
 	}
 }
 
+/* コメントの終わりの次を返す (p は "<!--" の位置、ブラウザと同じ位置で終わらせる) */
+static const char *FindCommentEnd(const char *p, const char *end)
+{
+	const char *q = p + 4;
+
+	//<!--> と <!---> は空のコメント
+	if(q < end && *q == '>'){
+		return q + 1;
+	}
+	if(q + 1 < end && *q == '-' && *(q + 1) == '>'){
+		return q + 2;
+	}
+	for(; q + 2 < end; q++){
+		if(*q != '-' || *(q + 1) != '-'){
+			continue;
+		}
+		if(*(q + 2) == '>'){
+			return q + 3;
+		}
+		//--!> でも終わる
+		if(q + 3 < end && *(q + 2) == '!' && *(q + 3) == '>'){
+			return q + 4;
+		}
+	}
+	return end;
+}
+
+/*
+ * 先頭に挿入する位置
+ * スクリプトを制限する meta は head の外にあると無視されるため、他の内容より前に挿入する
+ * (BOM と空白の後、DOCTYPE がある場合はその後)
+ */
+static long FindInsertPos(const char *p, long len)
+{
+	const char *end = p + len;
+	const char *q = p;
+	const char *t;
+
+	if(len >= 3 && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF){
+		q += 3;
+	}
+	//DOCTYPE の前の空白とコメントは読み飛ばす
+	for(t = q; t < end; ){
+		if(IS_SPACE(*t)){
+			t++;
+		}else if(StartsWithI(t, end, "<!--") == TRUE){
+			t = FindCommentEnd(t, end);
+		}else{
+			break;
+		}
+	}
+	if(StartsWithI(t, end, "<!doctype") == TRUE){
+		for(; t < end && *t != '>'; t++);
+		if(t < end){
+			return (long)(t + 1 - p);
+		}
+	}
+	return (long)(q - p);
+}
+
 /* 生テキスト要素の終わりを検索 */
 static const char *FindEndTag(const char *p, const char *end, const char *tag)
 {
@@ -863,7 +923,7 @@ char *Archive_RewriteHtml(const char *html, long len, const char *url, const cha
 	const char *q, *name, *seg, *te, *raw, *tail;
 	ATTR attr[MAX_ATTR];
 	char *base, *css;
-	long nlen, clen, insertAt = -1, htmlPos = -1, doctypeEnd = -1;
+	long nlen, clen, insertAt;
 	int cnt, i, action, type;
 	BOOL jis = FALSE;
 	BOOL endtag, over, framelocal, hdrcs;
@@ -902,8 +962,7 @@ char *Archive_RewriteHtml(const char *html, long len, const char *url, const cha
 		}
 		//コメント
 		if(StartsWithI(p, end, "<!--") == TRUE){
-			q = FindI(p + 4, end, "-->");
-			q = (q != NULL) ? q + 3 : end;
+			q = FindCommentEnd(p, end);
 			Buf_Add(&b, p, (long)(q - p));
 			p = q;
 			continue;
@@ -913,14 +972,26 @@ char *Archive_RewriteHtml(const char *html, long len, const char *url, const cha
 			for(q = p; q < end && *q != '>'; q++);
 			q = (q < end) ? q + 1 : end;
 			Buf_Add(&b, p, (long)(q - p));
-			if(doctypeEnd < 0 && StartsWithI(p, end, "<!doctype") == TRUE){
-				doctypeEnd = b.len;
-			}
 			p = q;
 			continue;
 		}
 		endtag = (p + 1 < end && *(p + 1) == '/') ? TRUE : FALSE;
 		if(endtag == TRUE){
+			if(p + 2 < end && IS_ALPHA(*(p + 2))){
+				//終了タグの属性は意味を持たないため、タグ名のみを出力する
+				//(引用符の中の > で終わらせると、ブラウザとタグの範囲がずれる)
+				q = ParseTag(p + 1, end, &name, &nlen, attr, &cnt, NULL);
+				if(q == NULL){
+					//閉じていないタグは出力しない
+					p = end;
+					continue;
+				}
+				Buf_Str(&b, "</");
+				Buf_Add(&b, name, nlen);
+				Buf_Str(&b, ">");
+				p = q;
+				continue;
+			}
 			for(q = p; q < end && *q != '>'; q++);
 			q = (q < end) ? q + 1 : end;
 			Buf_Add(&b, p, (long)(q - p));
@@ -931,15 +1002,6 @@ char *Archive_RewriteHtml(const char *html, long len, const char *url, const cha
 			Buf_Add(&b, p, 1);
 			p++;
 			continue;
-		}
-
-		//挿入位置
-		if(insertAt < 0){
-			if(EqualI(name, nlen, "html") == TRUE){
-				//html の後に head が無い場合に使用
-			}else if(EqualI(name, nlen, "head") != TRUE){
-				insertAt = (htmlPos >= 0) ? htmlPos : b.len;
-			}
 		}
 
 		//JavaScript を保存しない場合は script 要素を削除する
@@ -984,14 +1046,6 @@ char *Archive_RewriteHtml(const char *html, long len, const char *url, const cha
 			}
 			Buf_Str(&b, ">");
 		}
-
-		if(insertAt < 0){
-			if(EqualI(name, nlen, "head") == TRUE){
-				insertAt = b.len;
-			}else if(EqualI(name, nlen, "html") == TRUE && htmlPos < 0){
-				htmlPos = b.len;
-			}
-		}
 		p = te;
 
 		//生テキストの要素
@@ -1021,9 +1075,7 @@ char *Archive_RewriteHtml(const char *html, long len, const char *url, const cha
 	}
 
 	//先頭に挿入
-	if(insertAt < 0){
-		insertAt = (htmlPos >= 0) ? htmlPos : ((doctypeEnd >= 0) ? doctypeEnd : 0);
-	}
+	insertAt = (b.p != NULL) ? FindInsertPos(b.p, b.len) : 0;
 	MakeHead(&h, url, charset, js);
 	if(h.err == TRUE || Buf_Reserve(&b, h.len) == FALSE){
 		Buf_Free(&h);
